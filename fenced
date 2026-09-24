@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: claude|codex|... [fence options] [tool args...]
        fenced <tool> [fence options] [tool args...]
-       fenced env [DIR]     Edit the per-project env file (tokens) for DIR
+       fenced env [DIR]     Edit the per-project env file (tokens); default: repo root
 
 Runs <tool> in yolo mode inside a fence sandbox. Read/write: the current
 directory (plus the main repo of a git worktree). Everything else in $HOME is
@@ -56,24 +56,87 @@ EOF
 # invisible inside the fence, so a project only ever sees its own values.
 PROJ_ENV_DIR=${XDG_CONFIG_HOME:-$H/.config}/claude-fenced/projects
 
-# `fenced env [DIR]`: create/edit the env file for DIR (default: cwd).
+# Fine-grained GitHub token for one repo: everything a dev workflow needs,
+# nothing administrative. GitHub has no API for creating PATs, but its "new
+# token" page takes prefilled settings from the URL; only the repository has to
+# be picked by hand ("Only select repositories").
+# No workflows=write by default: editing .github/workflows lets the agent run
+# arbitrary CI with the repo's secrets. FENCED_TOKEN_WORKFLOWS=1 adds it.
+TOKEN_PERMS=(contents=write pull_requests=write issues=write discussions=write
+             actions=read statuses=read metadata=read)
+[[ ${FENCED_TOKEN_WORKFLOWS:-0} == 1 ]] && TOKEN_PERMS+=(workflows=write)
+token_url() {  # owner repo
+  local enc name host pre post qs p
+  enc() { jq -rn --arg v "$1" '$v|@uri'; }
+  host=$(hostname -s)
+  # Names must be unique and <= 40 chars: shorten the repo part if needed.
+  pre="$host fenced " post=" $(date +%F)"
+  name="$pre${2:0:$((40 - ${#pre} - ${#post}))}$post"
+  qs="name=$(enc "$name")&description=$(enc "claude-fenced agent token for $1/$2 on $host")"
+  qs+="&target_name=$(enc "$1")&expires_in=${FENCED_TOKEN_DAYS:-365}"
+  for p in "${TOKEN_PERMS[@]}"; do qs+="&$p"; done
+  printf 'https://github.com/settings/personal-access-tokens/new?%s' "$qs"
+}
+
+# `fenced env [DIR]`: create/edit the env file for DIR (default: the current
+# git repo's main root, so worktrees and subdirs share it; else cwd).
 edit_env() {
-  local dir f
+  local dir gd remote owner="" repo="" url="" f tok push hint
   dir=$(realpath -e -- "${1:-$PWD}") || die "no such dir: ${1:-$PWD}"
+  if [[ -z ${1:-} ]] && gd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+    dir=$(dirname "$gd")
+  fi
+  remote=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+  if [[ $remote =~ github\.com[:/]+([^/]+)/([^/]+)$ ]]; then
+    owner=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git}
+    url=$(token_url "$owner" "$repo")
+  fi
   f=$PROJ_ENV_DIR$dir.env
   if [[ ! -e $f ]]; then
+    hint=""
+    [[ -n $url ]] && hint="
+# To create one: open the link, choose \"Only select repositories\" -> $owner/$repo,
+# generate, and paste it after GH_TOKEN= below.
+# $url"
     mkdir -p -m 700 "$(dirname "$f")"
     (umask 077; cat >"$f" <<EOF
 # Environment for fenced agents started in $dir (or below).
 # Sourced by bash outside the fence; the values (not this file) are passed in.
-# GH_TOKEN: a fine-grained PAT for this repo only. Also makes git use it for
-# https://github.com (and rewrites git@github.com: remotes to https).
+#
+# GH_TOKEN: a fine-grained PAT for this repo only. git and gh use it (git@ remotes
+# are rewritten to https).$hint
 GH_TOKEN=
 EOF
     )
   fi
-  echo "$f"
-  exec "${EDITOR:-nano}" "$f"
+  tok=$(set -a; source "$f" >/dev/null 2>&1; printf '%s' "${GH_TOKEN:-}")
+  if [[ (-z $tok || ${FENCED_TOKEN_WORKFLOWS:-0} == 1) && -n $url ]]; then
+    # Usually run over ssh (often inside herdr), where a long URL wraps and
+    # can't be clicked reliably, and xdg-open would open on the wrong machine.
+    # So: copy it to the *local* clipboard (OSC 52), print a short clickable
+    # link (OSC 8), and the plain URL as a fallback.
+    printf 'GitHub token for %s/%s: choose "Only select repositories" -> %s, generate,\nand paste it after GH_TOKEN= in the editor.\n\n' "$owner" "$repo" "$repo" >&2
+    if [[ -t 2 ]]; then
+      printf '\e]52;c;%s\a' "$(printf '%s' "$url" | base64 -w0)" >&2
+      printf '  \e]8;;%s\e\\>> Open the new-token page <<\e]8;;\e\\  (link also copied to your clipboard)\n\n' "$url" >&2
+    fi
+    printf '  %s\n\n' "$url" >&2
+    [[ -t 0 ]] && read -rsp "Press Enter to open the editor..." _ && echo >&2
+  fi
+  echo "$f" >&2
+  local -a ed; read -ra ed <<<"${VISUAL:-${EDITOR:-nano}}"
+  "${ed[@]}" "$f"
+
+  tok=$(set -a; source "$f" >/dev/null 2>&1; printf '%s' "${GH_TOKEN:-}")
+  if [[ -n $tok && -n $owner ]]; then
+    if push=$(GH_TOKEN=$tok gh api "repos/$owner/$repo" --jq .permissions.push 2>/dev/null) && [[ $push == true ]]; then
+      echo "GH_TOKEN: push access to $owner/$repo OK" >&2
+    else
+      echo "GH_TOKEN: WARNING: can't push to $owner/$repo with this token (repo not selected? expired?)" >&2
+      exit 1
+    fi
+  fi
+  exit 0
 }
 
 # --- which tool? ------------------------------------------------------------

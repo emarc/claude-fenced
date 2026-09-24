@@ -64,8 +64,33 @@ repo. Anything the agent can push to or deploy with is as good as write access.
 
 ```bash
 cd ~/Projects/projectA
-fenced env            # opens ~/.config/claude-fenced/projects/home/marc/Projects/projectA.env
+fenced env            # edit ~/.config/claude-fenced/projects/home/marc/Projects/projectA.env
 ```
+
+In a GitHub repo, a new env file comes with a link to GitHub's "new
+fine-grained token" page, pre-filled with name, owner, expiry (365 days, or
+`FENCED_TOKEN_DAYS`) and permissions: contents, pull requests, issues and
+discussions (write), actions and statuses (read). Before the
+editor opens, the link is also shown in the terminal, meant for use over ssh
+and inside herdr: it's copied to your *local* clipboard (OSC 52), shown as a
+short clickable link (OSC 8), and printed in full as a fallback. It waits for
+Enter, so you can create the token first. GitHub has no API for
+creating tokens, and the link can't pre-select the repository, so on that page
+pick *Only select repositories* → the repo, generate, and paste the token after
+`GH_TOKEN=`. After you save, `fenced env` checks that the token can push to
+the repo. Without a DIR argument the file belongs to the main repo root, so
+worktrees and subdirs share it.
+
+The token deliberately lacks **workflows** write access. With it the agent
+could edit `.github/workflows` and run arbitrary CI with the repo's secrets
+(publish/deploy credentials, a possibly more powerful `GITHUB_TOKEN`,
+unprotected environments). Without it, pushes that touch workflow files are
+rejected; push those yourself, or make a token with it:
+`FENCED_TOKEN_WORKFLOWS=1 fenced env` (shows a link that includes it). This
+isn't airtight: an existing workflow that runs repo code (tests, build scripts)
+with secrets in its env can still be abused through ordinary code changes. Only
+secrets behind protected branches or environments with required reviewers are
+out of reach.
 
 ```bash
 GH_TOKEN=github_pat_...                 # plain values

@@ -58,6 +58,11 @@ that doesn't apply here. Don't port it over.
    (a credential helper that echoes the token, and ssh→https `insteadOf`).
    Verified: `git credential fill` returns the token inside, and the env dir
    is invisible inside.
+   `fenced env` helps make the token. GitHub has no PAT-creation API (as of
+   2026-09), so the env template (and the terminal) gets a prefilled
+   `settings/personal-access-tokens/new?...` URL (name ≤40 chars and unique, `target_name`, `expires_in`, permission
+   params). Repository selection can't be prefilled. After the editor exits,
+   the token is checked with `gh api repos/O/R` (`.permissions.push`).
 7. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
 
 ## Verified facts (fence 0.1.67, kernel 7.2, 2026-09-25)
