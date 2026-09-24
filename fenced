@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: claude|codex|... [fence options] [tool args...]
        fenced <tool> [fence options] [tool args...]
-       fenced env [DIR]     Edit the per-project env file (tokens); default: repo root
+       fenced gh-token [DIR]  Set a GitHub token limited to the repo (default: cwd's repo)
 
 Runs <tool> in yolo mode inside a fence sandbox. Read/write: the current
 directory (plus the main repo of a git worktree). Everything else in $HOME is
@@ -78,65 +78,106 @@ token_url() {  # owner repo
   printf 'https://github.com/settings/personal-access-tokens/new?%s' "$qs"
 }
 
-# `fenced env [DIR]`: create/edit the env file for DIR (default: the current
-# git repo's main root, so worktrees and subdirs share it; else cwd).
-edit_env() {
-  local dir gd remote owner="" repo="" url="" f tok push hint
+# `fenced gh-token [DIR]`: set GH_TOKEN for DIR's repo (default: the current
+# git repo's main root, so worktrees and subdirs share it). Shows a prefilled
+# token link and takes the token at a prompt; Enter alone opens the env file.
+gh_token_cmd() {
+  local dir gd remote owner repo url f tok new
   dir=$(realpath -e -- "${1:-$PWD}") || die "no such dir: ${1:-$PWD}"
   if [[ -z ${1:-} ]] && gd=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
     dir=$(dirname "$gd")
   fi
-  remote=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
-  if [[ $remote =~ github\.com[:/]+([^/]+)/([^/]+)$ ]]; then
-    owner=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git}
-    url=$(token_url "$owner" "$repo")
-  fi
+  remote=$(git -C "$dir" remote get-url origin 2>/dev/null) || die "no 'origin' remote in $dir"
+  [[ $remote =~ github\.com[:/]+([^/]+)/([^/]+)$ ]] || die "origin is not on github.com: $remote"
+  owner=${BASH_REMATCH[1]} repo=${BASH_REMATCH[2]%.git}
+  url=$(token_url "$owner" "$repo")
+
   f=$PROJ_ENV_DIR$dir.env
   if [[ ! -e $f ]]; then
-    hint=""
-    [[ -n $url ]] && hint="
-# To create one: open the link, choose \"Only select repositories\" -> $owner/$repo,
-# generate, and paste it after GH_TOKEN= below.
-# $url"
     mkdir -p -m 700 "$(dirname "$f")"
     (umask 077; cat >"$f" <<EOF
 # Environment for fenced agents started in $dir (or below).
-# Sourced by bash outside the fence; the values (not this file) are passed in.
+# Sourced by bash outside the fence; only the values are passed in.
+# Add other variables as needed.
 #
-# GH_TOKEN: a fine-grained PAT for this repo only. git and gh use it (git@ remotes
-# are rewritten to https).$hint
+# GH_TOKEN: a fine-grained PAT for $owner/$repo only (\`fenced gh-token\` sets it).
+# git and gh use it; git@github.com: remotes are rewritten to https.
 GH_TOKEN=
 EOF
     )
   fi
   tok=$(set -a; source "$f" >/dev/null 2>&1; printf '%s' "${GH_TOKEN:-}")
-  if [[ (-z $tok || ${FENCED_TOKEN_WORKFLOWS:-0} == 1) && -n $url ]]; then
-    # Usually run over ssh (often inside herdr), where a long URL wraps and
-    # can't be clicked reliably, and xdg-open would open on the wrong machine.
-    # So: copy it to the *local* clipboard (OSC 52), print a short clickable
-    # link (OSC 8), and the plain URL as a fallback.
-    printf 'GitHub token for %s/%s: choose "Only select repositories" -> %s, generate,\nand paste it after GH_TOKEN= in the editor.\n\n' "$owner" "$repo" "$repo" >&2
-    if [[ -t 2 ]]; then
-      printf '\e]52;c;%s\a' "$(printf '%s' "$url" | base64 -w0)" >&2
-      printf '  \e]8;;%s\e\\>> Open the new-token page <<\e]8;;\e\\  (link also copied to your clipboard)\n\n' "$url" >&2
-    fi
-    printf '  %s\n\n' "$url" >&2
-    [[ -t 0 ]] && read -rsp "Press Enter to open the editor..." _ && echo >&2
-  fi
-  echo "$f" >&2
-  local -a ed; read -ra ed <<<"${VISUAL:-${EDITOR:-nano}}"
-  "${ed[@]}" "$f"
 
-  tok=$(set -a; source "$f" >/dev/null 2>&1; printf '%s' "${GH_TOKEN:-}")
-  if [[ -n $tok && -n $owner ]]; then
-    if push=$(GH_TOKEN=$tok gh api "repos/$owner/$repo" --jq .permissions.push 2>/dev/null) && [[ $push == true ]]; then
-      echo "GH_TOKEN: push access to $owner/$repo OK" >&2
-    else
-      echo "GH_TOKEN: WARNING: can't push to $owner/$repo with this token (repo not selected? expired?)" >&2
-      exit 1
-    fi
+  # Usually run over ssh (often inside herdr), where a long URL wraps and can't
+  # be clicked reliably, and xdg-open would open on the wrong machine. So: copy
+  # it to the *local* clipboard (OSC 52), print a short clickable link (OSC 8),
+  # and the plain URL as a fallback.
+  printf 'GitHub token for %s/%s: open the link, choose "Only select repositories" -> %s,\nand generate.\n\n' "$owner" "$repo" "$repo" >&2
+  if [[ -t 2 ]]; then
+    printf '\e]52;c;%s\a' "$(printf '%s' "$url" | base64 -w0)" >&2
+    printf '  \e]8;;%s\e\\>> Open the new-token page <<\e]8;;\e\\  (link also copied to your clipboard)\n\n' "$url" >&2
   fi
+  printf '  %s\n\n' "$url" >&2
+  [[ -n $tok ]] && echo "A token is already set; pasting a new one replaces it." >&2
+
+  if [[ -t 0 ]]; then
+    new=$(read_masked "Paste token (or just Enter to edit $(basename "$f") instead): ")
+  else
+    read -r new || true
+  fi
+  new=${new//[[:space:]]/}
+  # Pasted twice (easy with no visible feedback)? Keep one copy.
+  local half=$(( ${#new} / 2 ))
+  (( ${#new} % 2 == 0 && half > 0 )) && [[ ${new:0:half} == "${new:half}" ]] && new=${new:0:half}
+  if [[ -n $new ]]; then
+    [[ $new =~ ^(github_pat_|ghp_)[A-Za-z0-9_]+$ ]] || die "that doesn't look like a GitHub token; nothing saved"
+    check_token "$new" "$owner" "$repo" || die "nothing saved"
+    if grep -q '^GH_TOKEN=' "$f"; then
+      sed -i "s|^GH_TOKEN=.*|GH_TOKEN=$new|" "$f"
+    else
+      printf 'GH_TOKEN=%s\n' "$new" >>"$f"
+    fi
+    echo "Saved to $f" >&2
+    exit 0
+  fi
+
+  # Manual edit, in a terminal editor: over ssh a GUI editor opens on the wrong
+  # screen and returns immediately. Omarchy's launcher starts GUI defaults (e.g.
+  # code) detached, so it's replaced by nano. FENCED_EDITOR overrides.
+  echo "$f" >&2
+  local -a ed; read -ra ed <<<"${FENCED_EDITOR:-${VISUAL:-${EDITOR:-nano}}}"
+  [[ -z ${FENCED_EDITOR:-} && ${ed[0]##*/} == omarchy-launch-editor ]] && ed=(nano)
+  "${ed[@]}" "$f"
+  tok=$(set -a; source "$f" >/dev/null 2>&1; printf '%s' "${GH_TOKEN:-}")
+  if [[ -n $tok ]]; then check_token "$tok" "$owner" "$repo"; exit $?; fi
   exit 0
+}
+
+# Read a secret from the terminal, echoing one * per character (so a paste is
+# visibly received); Backspace works. Prompt and stars go to stderr.
+read_masked() {
+  local c v=""
+  printf '%s' "$1" >&2
+  while IFS= read -rsn1 c; do
+    [[ -z $c ]] && break                              # Enter
+    if [[ $c == $'\x7f' || $c == $'\b' ]]; then
+      [[ -n $v ]] && { v=${v%?}; printf '\b \b' >&2; }
+      continue
+    fi
+    v+=$c; printf '*' >&2
+  done
+  echo >&2
+  printf '%s' "$v"
+}
+
+check_token() {  # token owner repo
+  local push
+  if push=$(GH_TOKEN=$1 gh api "repos/$2/$3" --jq .permissions.push 2>/dev/null) && [[ $push == true ]]; then
+    echo "GH_TOKEN: push access to $2/$3 OK" >&2
+  else
+    echo "GH_TOKEN: WARNING: can't push to $2/$3 with this token (repo not selected? expired?)" >&2
+    return 1
+  fi
 }
 
 # --- which tool? ------------------------------------------------------------
@@ -145,7 +186,7 @@ if [[ $tool == fenced ]]; then
   [[ $# -gt 0 ]] || { usage; exit 1; }
   case $1 in
     -h|--help|--fence-help) usage; exit 0 ;;
-    env) shift; edit_env "$@" ;;
+    gh-token) shift; gh_token_cmd "$@" ;;
   esac
   tool=$1; shift
 fi

@@ -58,11 +58,15 @@ that doesn't apply here. Don't port it over.
    (a credential helper that echoes the token, and ssh→https `insteadOf`).
    Verified: `git credential fill` returns the token inside, and the env dir
    is invisible inside.
-   `fenced env` helps make the token. GitHub has no PAT-creation API (as of
-   2026-09), so the env template (and the terminal) gets a prefilled
-   `settings/personal-access-tokens/new?...` URL (name ≤40 chars and unique, `target_name`, `expires_in`, permission
-   params). Repository selection can't be prefilled. After the editor exits,
-   the token is checked with `gh api repos/O/R` (`.permissions.push`).
+   `fenced gh-token` sets it. GitHub has no PAT-creation API (as of
+   2026-09), so it shows a prefilled `settings/personal-access-tokens/new?...`
+   URL (via OSC 52 clipboard, an OSC 8 link, and plain text; used over ssh/herdr) (name ≤40 chars and unique, `target_name`, `expires_in`, permission
+   params; `expires_in` max is 365 in practice, though the docs say 366).
+   Repository selection can't be prefilled. The pasted token is checked with
+   `gh api repos/O/R` (`.permissions.push`) before it's saved. Enter alone
+   opens the env file in a terminal editor, with `omarchy-launch-editor`
+   replaced by nano, since it starts GUI editors detached.
+   Not `fenced gh`: `fenced <tool>` runs a tool.
 7. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
 
 ## Verified facts (fence 0.1.67, kernel 7.2, 2026-09-25)
