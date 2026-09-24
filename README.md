@@ -55,13 +55,36 @@ FENCED_RO_DIRS=(~/Projects/shared-lib)
 FENCED_RW_DIRS=()
 ```
 
-## Secrets
+## Secrets and per-project tokens
 
 No credentials are visible by default: no `gh` auth, SSH keys or agent,
-cloud credentials or keyring. If the agent should push or deploy, give it a
-narrowly scoped token for that project (e.g. a fine-grained GitHub token for one
-repo) via env var, rather than exposing `~/.config/gh`. Anything the agent can
-push to or deploy with is as good as write access, so scope accordingly.
+cloud credentials or keyring. If an agent should push or deploy, give that
+project a narrowly scoped token, e.g. a fine-grained GitHub PAT for just that
+repo. Anything the agent can push to or deploy with is as good as write access.
+
+```bash
+cd ~/Projects/projectA
+fenced env            # opens ~/.config/claude-fenced/projects/home/marc/Projects/projectA.env
+```
+
+```bash
+GH_TOKEN=github_pat_...                 # plain values
+NPM_TOKEN=$(pass show npm/projectA)     # or pulled from a secret manager (sourced by bash)
+```
+
+How it works:
+- The files mirror the project path (mode 600) and are sourced by bash
+  **outside** the fence. Only the resulting variables go in. The directory is
+  invisible inside, so projectA's agent can't read projectB's tokens.
+- Files for the work dir and every parent directory are loaded, outermost
+  first. A worktree also gets its main repo's file. Subdirs and worktrees
+  inherit the project's token, and a `~/Projects.env` could hold shared values.
+- With `GH_TOKEN` set, `gh` uses it, and git gets a credential helper for
+  `https://github.com` plus a `git@github.com:` → https rewrite, all via
+  `GIT_CONFIG_*` env vars. `git push` works with no gitconfig changes.
+- It's automatic on every launch, so Orca, `claude -c` and so on get it too.
+  The startup summary lists which files and variable names were loaded.
+- The agent can of course read its own token (it's in its environment).
 
 ## Integrations
 

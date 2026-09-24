@@ -18,6 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: claude|codex|... [fence options] [tool args...]
        fenced <tool> [fence options] [tool args...]
+       fenced env [DIR]     Edit the per-project env file (tokens) for DIR
 
 Runs <tool> in yolo mode inside a fence sandbox. Read/write: the current
 directory (plus the main repo of a git worktree). Everything else in $HOME is
@@ -43,14 +44,46 @@ Environment:
 
 Config: ~/.config/claude-fenced/config (bash; may set FENCED_RO_DIRS=(...),
 FENCED_RW_DIRS=(...), FENCED_HERDR=1). Not visible inside the sandbox.
+
+Per-project env: ~/.config/claude-fenced/projects/<abs dir>.env is sourced for
+the work dir and each parent (and a worktree's main repo), outside the fence.
+GH_TOKEN there also configures git for github.com. See README.md.
 EOF
+}
+
+# Per-project env files (tokens etc.) mirror the project path under here, e.g.
+# ~/.config/claude-fenced/projects/home/me/Projects/foo.env. The directory is
+# invisible inside the fence, so a project only ever sees its own values.
+PROJ_ENV_DIR=${XDG_CONFIG_HOME:-$H/.config}/claude-fenced/projects
+
+# `fenced env [DIR]`: create/edit the env file for DIR (default: cwd).
+edit_env() {
+  local dir f
+  dir=$(realpath -e -- "${1:-$PWD}") || die "no such dir: ${1:-$PWD}"
+  f=$PROJ_ENV_DIR$dir.env
+  if [[ ! -e $f ]]; then
+    mkdir -p -m 700 "$(dirname "$f")"
+    (umask 077; cat >"$f" <<EOF
+# Environment for fenced agents started in $dir (or below).
+# Sourced by bash outside the fence; the values (not this file) are passed in.
+# GH_TOKEN: a fine-grained PAT for this repo only. Also makes git use it for
+# https://github.com (and rewrites git@github.com: remotes to https).
+GH_TOKEN=
+EOF
+    )
+  fi
+  echo "$f"
+  exec "${EDITOR:-nano}" "$f"
 }
 
 # --- which tool? ------------------------------------------------------------
 tool=$(basename "$0")
 if [[ $tool == fenced ]]; then
   [[ $# -gt 0 ]] || { usage; exit 1; }
-  case $1 in -h|--help|--fence-help) usage; exit 0 ;; esac
+  case $1 in
+    -h|--help|--fence-help) usage; exit 0 ;;
+    env) shift; edit_env "$@" ;;
+  esac
   tool=$1; shift
 fi
 
@@ -182,6 +215,46 @@ for d in "${ro[@]}"; do [[ -n $d ]] || continue; d=$(abs "$d"); guard "$d"; [[ -
 # Git worktree: the shared .git dir of the main repo must be writable to commit.
 if gd=$(git -C "$work" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
   [[ $gd == "$work"/* ]] || { allow_write+=("$gd"); note "git: also granting $gd"; }
+fi
+
+# Per-project env: <PROJ_ENV_DIR><dir>.env for the work dir and each ancestor
+# (outermost first, so inner files override), and for a worktree also the main
+# repo's chain (applied before the work dir's).
+env_chain() {
+  local d=$1 chain=()
+  while [[ $d != / ]]; do chain=("$PROJ_ENV_DIR$d.env" "${chain[@]}"); d=$(dirname "$d"); done
+  printf '%s\n' "${chain[@]}"
+}
+env_files=()
+[[ -n ${gd:-} ]] && mapfile -t -O 0 env_files < <(env_chain "$(dirname "$gd")")
+mapfile -t -O "${#env_files[@]}" env_files < <(env_chain "$work")
+declare -A seen_env=()
+for f in "${env_files[@]}"; do
+  [[ -f $f && -z ${seen_env[$f]:-} ]] || continue
+  seen_env[$f]=1
+  [[ $(stat -c %a "$f") == ?00 ]] || note "warning: $f is readable by others (chmod 600)"
+  before=$(compgen -e)
+  set -a
+  # shellcheck source=/dev/null
+  source "$f"
+  set +a
+  note "env: ${f#"$PROJ_ENV_DIR"} ($(comm -13 <(sort <<<"$before") <(compgen -e | sort) | xargs))"
+done
+
+# Empty values (e.g. the template's `GH_TOKEN=`) count as unset.
+for v in GH_TOKEN GITHUB_TOKEN; do [[ -n ${!v:-} ]] || unset "$v"; done
+
+# A GitHub token also serves git: credential helper and ssh->https rewrite,
+# configured via GIT_CONFIG_* env so nothing is written to disk.
+if [[ -n ${GH_TOKEN:-${GITHUB_TOKEN:-}} ]]; then
+  gc=${GIT_CONFIG_COUNT:-0}
+  gitcfg() { export "GIT_CONFIG_KEY_$gc=$1" "GIT_CONFIG_VALUE_$gc=$2"; gc=$((gc + 1)); }
+  gitcfg credential.https://github.com.helper ''   # drop inherited helpers
+  gitcfg credential.https://github.com.helper \
+    '!f() { test "$1" = get && echo username=x-access-token && echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'
+  gitcfg url.https://github.com/.insteadOf git@github.com:
+  gitcfg url.https://github.com/.insteadOf ssh://git@github.com/
+  export GIT_CONFIG_COUNT=$gc
 fi
 
 # Tool state (read-write) and executable config (read-only again).

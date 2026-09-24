@@ -52,7 +52,13 @@ that doesn't apply here. Don't port it over.
 5. **Build the fence JSON** with jq and pass it via `--settings /dev/fd/3`.
    Settings are always explicit, because otherwise fence auto-loads a
    `fence.json` from the cwd or its parents, and a repo could ship one.
-6. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
+6. **Per-project env**: source `~/.config/claude-fenced/projects<dir>.env`
+   for the work dir and its ancestors (plus the worktree main repo's chain),
+   outside the fence. `GH_TOKEN` also sets up git via `GIT_CONFIG_COUNT/KEY/VALUE`
+   (a credential helper that echoes the token, and ssh→https `insteadOf`).
+   Verified: `git credential fill` returns the token inside, and the env dir
+   is invisible inside.
+7. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
 
 ## Verified facts (fence 0.1.67, kernel 7.2, 2026-09-25)
 
