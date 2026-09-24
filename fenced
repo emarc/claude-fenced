@@ -43,7 +43,12 @@ Environment:
   FENCED_<TOOL>_BIN      Path to the real binary (e.g. FENCED_CLAUDE_BIN)
 
 Config: ~/.config/claude-fenced/config (bash; may set FENCED_RO_DIRS=(...),
-FENCED_RW_DIRS=(...), FENCED_HERDR=1). Not visible inside the sandbox.
+FENCED_RW_DIRS=(...), FENCED_HERDR=1, FENCED_MISE_TOOLS=(...)). Not visible
+inside the sandbox.
+
+Inside the fence, mise tools' real bin dirs come first on PATH and ~/.local/bin
+(Omarchy's mise wrappers, which can't run there) last. FENCED_MISE_TOOLS
+(default: gh playwright) are installed with mise first if missing.
 
 Per-project env: ~/.config/claude-fenced/projects/<abs dir>.env is sourced for
 the work dir and each parent (and a worktree's main repo), outside the fence.
@@ -263,7 +268,7 @@ command -v fence >/dev/null || die "fence not found (see README.md)"
 command -v jq >/dev/null || die "jq not found"
 
 # --- options -------------------------------------------------------------------
-FENCED_RO_DIRS=() FENCED_RW_DIRS=()
+FENCED_RO_DIRS=() FENCED_RW_DIRS=() FENCED_MISE_TOOLS=(gh playwright)
 cfg=${XDG_CONFIG_HOME:-$H/.config}/claude-fenced/config
 # shellcheck source=/dev/null
 [[ -f $cfg ]] && source "$cfg"
@@ -432,6 +437,39 @@ if [[ $shell == 1 ]]; then
 else
   cmd=("$real" "${yolo[@]}" "${tool_args[@]}")
 fi
+# PATH inside the fence. Omarchy's ~/.local/bin mise wrappers run `mise use -g`
+# first, which needs write access to mise's config, installs and caches, so they
+# fail in the fence. Put mise's real bin dirs first (after our bin/, so a nested
+# `claude` still gets its yolo flag) and ~/.local/bin last. FENCED_MISE_TOOLS are
+# installed out here if missing (e.g. playwright's wrapper installs on first
+# run); updating them is left to unfenced use.
+fence_path() {
+  local t spec p lb bin out=() res=() last=() ps
+  local -A seen=()
+  lb=$(realpath -m -- "$H/.local/bin") bin=$SELF_DIR/bin
+  if command -v mise >/dev/null; then
+    for t in "${FENCED_MISE_TOOLS[@]}"; do
+      mise which "$t" >/dev/null 2>&1 && continue
+      spec=$(sed -n 's/^mise use -g --quiet "\([^"]*\)".*/\1/p' "$H/.local/bin/$t" 2>/dev/null | head -1)
+      [[ -n $spec ]] || continue
+      note "installing $t ($spec) with mise"
+      MISE_MINIMUM_RELEASE_AGE=0 mise use -g --quiet "$spec" >&2 || note "  failed: $t won't work in the fence"
+    done
+    mapfile -t out < <(mise bin-paths 2>/dev/null)
+  fi
+  IFS=: read -ra ps <<<"$PATH"
+  [[ :$PATH: == *:"$bin":* ]] && out=("$bin" "${out[@]}")
+  out+=("${ps[@]}")
+  for p in "${out[@]}"; do
+    [[ -n $p && -z ${seen[$p]:-} ]] || continue
+    seen[$p]=1
+    if [[ $(realpath -m -- "$p") == "$lb" ]]; then last+=("$p"); else res+=("$p"); fi
+  done
+  res+=("${last[@]}")
+  local IFS=:; printf '%s' "${res[*]}"
+}
+PATH=$(fence_path)
+
 # Environment for inside the sandbox: strip handles to host services.
 unset DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK GPG_AGENT_INFO
 [[ $herdr == 1 ]] || unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID

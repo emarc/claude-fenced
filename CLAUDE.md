@@ -67,7 +67,12 @@ that doesn't apply here. Don't port it over.
    opens the env file in a terminal editor, with `omarchy-launch-editor`
    replaced by nano, since it starts GUI editors detached.
    Not `fenced gh`: `fenced <tool>` runs a tool.
-7. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
+7. **PATH for inside**: our `bin/`, then `mise bin-paths`, the rest, and
+   `~/.local/bin` last. Its mise wrappers fail in the fence (`mise use -g` writes
+   `~/.cache/mise/lockfiles`, config and installs, all ro on purpose). Missing
+   `FENCED_MISE_TOOLS` (default gh, playwright) get `mise use -g` outside first.
+   The mise shims do work inside, but print permission warnings each time.
+8. **`exec -a <tool> fence ...`**, so argv[0] is the tool name for Orca's fast path.
 
 ## Verified facts (fence 0.1.67, kernel 7.2, 2026-09-25)
 

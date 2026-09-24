@@ -53,7 +53,21 @@ Extra dirs can also come from `FENCED_RO` / `FENCED_RW` (colon-separated) or
 ```bash
 FENCED_RO_DIRS=(~/Projects/shared-lib)
 FENCED_RW_DIRS=()
+FENCED_MISE_TOOLS=(gh playwright)   # the default
 ```
+
+## Tools inside the fence
+
+Omarchy's `~/.local/bin/<tool>` scripts are mise wrappers that run
+`mise use -g` (update or install) before starting the tool. That needs write
+access to mise's config, installs and caches, which the fence keeps read-only
+because those binaries also run unfenced. So inside the fence, PATH has mise's
+real bin dirs (`mise bin-paths`, for the work dir) first and `~/.local/bin`
+last. Tools in `FENCED_MISE_TOOLS` that aren't installed yet (playwright's
+wrapper installs on first use) are installed by the wrapper before the fence
+starts. Updating them is left to normal, unfenced use. A tool that is neither
+installed nor listed won't run inside: add it to `FENCED_MISE_TOOLS`, or run it
+once outside.
 
 ## Secrets and per-project tokens
 
