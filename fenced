@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# fenced — run a coding agent (claude, codex, ...) in yolo mode inside a fence
+# (https://github.com/fencesandbox/fence) sandbox that can only see the current
+# directory plus explicitly granted folders. Network is fully open.
+#
+# Invoke via a symlink named after the tool (bin/claude -> ../fenced), or as
+# `fenced <tool> [args...]`. See README.md for usage and CLAUDE.md for design.
+set -euo pipefail
+
+SELF=$(realpath "${BASH_SOURCE[0]}")
+SELF_DIR=$(dirname "$SELF")
+H=$HOME
+
+die() { printf 'fenced: %s\n' "$*" >&2; exit 1; }
+note() { [[ ${FENCED_QUIET:-0} == 1 ]] || printf 'fenced: %s\n' "$*" >&2; }
+
+usage() {
+  cat <<'EOF'
+Usage: claude|codex|... [fence options] [tool args...]
+       fenced <tool> [fence options] [tool args...]
+
+Runs <tool> in yolo mode inside a fence sandbox. Read/write: the current
+directory (plus the main repo of a git worktree). Everything else in $HOME is
+invisible unless granted. Network is unrestricted, ports bind on the host.
+
+Fence options (must come before any tool args):
+  --fence-ro DIR      Grant read-only access to DIR (also passed as --add-dir)
+  --fence-rw DIR      Grant read-write access to DIR (also passed as --add-dir)
+  --fence-herdr       Expose the herdr socket (agent status; lets the agent drive herdr)
+  --fence-shell [ARGS]  Run bash (with ARGS) in the same sandbox instead of the tool
+  --fence-dry-run     Print the fence config and command, don't run
+  --fence-help        This help
+
+A tool arg `--add-dir DIR` is passed through and also grants read-write access.
+
+Environment:
+  FENCED_RO, FENCED_RW   Colon-separated extra read-only / read-write dirs
+  FENCED_HERDR=1         Same as --fence-herdr
+  FENCED_OFF=1           Run the real tool unfenced (escape hatch)
+  FENCED_DEBUG=1         Run fence with --debug
+  FENCED_QUIET=1         No startup summary
+  FENCED_<TOOL>_BIN      Path to the real binary (e.g. FENCED_CLAUDE_BIN)
+
+Config: ~/.config/claude-fenced/config (bash; may set FENCED_RO_DIRS=(...),
+FENCED_RW_DIRS=(...), FENCED_HERDR=1). Not visible inside the sandbox.
+EOF
+}
+
+# --- which tool? ------------------------------------------------------------
+tool=$(basename "$0")
+if [[ $tool == fenced ]]; then
+  [[ $# -gt 0 ]] || { usage; exit 1; }
+  case $1 in -h|--help|--fence-help) usage; exit 0 ;; esac
+  tool=$1; shift
+fi
+
+# --- find the real binary (skipping ourselves) -------------------------------
+resolve_real() {
+  local var="FENCED_${tool^^}_BIN" dir cand
+  var=${var//-/_}
+  if [[ -n ${!var:-} ]]; then printf '%s' "${!var}"; return; fi
+  local IFS=:
+  for dir in $PATH; do
+    cand=$dir/$tool
+    [[ -x $cand && ! -d $cand ]] || continue
+    [[ $(realpath "$cand") == "$SELF" ]] && continue
+    # Omarchy installs tools via mise and puts a tiny wrapper script in
+    # ~/.local/bin that updates the tool (`mise use -g`) and then `mise x`-es
+    # it. Do the update step out here (it needs write access to mise dirs),
+    # then fence the real binary so its argv[0] basename stays "$tool".
+    if head -c 4096 "$cand" 2>/dev/null | grep -q 'mise x'; then
+      if [[ -z ${FENCE_SANDBOX:-} ]]; then
+        MISE_MINIMUM_RELEASE_AGE=0 mise use -g --quiet "$tool" >&2 || true
+      fi
+      mise which "$tool" 2>/dev/null && return
+      continue
+    fi
+    printf '%s' "$cand"; return
+  done
+  return 1
+}
+real=$(resolve_real) || die "can't find the real '$tool' on PATH"
+
+# --- tool profiles -------------------------------------------------------------
+# yolo:     flag that disables the tool's own permission prompts/sandbox
+# state_rw: the tool's config/history (read-write)
+# protect:  config paths that would let a fenced agent get code executed by a
+#           later session (hooks, statusline, plugins, notify...); read-only
+yolo=() state_rw=() protect=() add_dir_flag=""
+extra_env=()
+case $tool in
+  claude)
+    yolo=(--dangerously-skip-permissions); add_dir_flag=--add-dir
+    state_rw=("$H/.claude")
+    protect=("$H/.claude/"{settings.json,settings.local.json,hooks,plugins,skills,agents,commands,output-styles,CLAUDE.md} "$H"/.claude/statusline*)
+    # Claude keeps its main state in ~/.claude.json and saves it via a lock dir
+    # and temp file *next to it*, i.e. in $HOME, which is not writable in the
+    # fence. So the file lives in ~/.claude/ with a symlink at the old path for
+    # unfenced use (claude resolves the symlink), and inside the fence
+    # CLAUDE_CONFIG_DIR points claude at ~/.claude/.claude.json directly.
+    extra_env=(CLAUDE_CONFIG_DIR="$H/.claude")
+    ;;
+  codex)
+    yolo=(--dangerously-bypass-approvals-and-sandbox); add_dir_flag=--add-dir
+    state_rw=("${CODEX_HOME:-$H/.codex}")
+    protect=("${CODEX_HOME:-$H/.codex}/"{config.toml,AGENTS.md,skills,prompts,rules})
+    ;;
+  gemini)
+    yolo=(--yolo); add_dir_flag=--include-directories
+    state_rw=("$H/.gemini")
+    protect=("$H/.gemini/settings.json")
+    ;;
+  *)
+    [[ -d $H/.$tool ]] && state_rw=("$H/.$tool")
+    ;;
+esac
+
+# Already inside a fence (e.g. the agent runs `claude -p` itself): run directly.
+if [[ -n ${FENCE_SANDBOX:-} || ${FENCED_OFF:-0} == 1 ]]; then
+  [[ ${FENCED_OFF:-0} == 1 ]] && note "FENCED_OFF=1: running $tool UNFENCED"
+  for e in "${extra_env[@]}"; do [[ -n ${FENCE_SANDBOX:-} ]] && export "$e"; done
+  exec -a "$tool" "$real" "${yolo[@]}" "$@"
+fi
+
+command -v fence >/dev/null || die "fence not found (see README.md)"
+command -v jq >/dev/null || die "jq not found"
+
+# --- options -------------------------------------------------------------------
+FENCED_RO_DIRS=() FENCED_RW_DIRS=()
+cfg=${XDG_CONFIG_HOME:-$H/.config}/claude-fenced/config
+# shellcheck source=/dev/null
+[[ -f $cfg ]] && source "$cfg"
+ro=("${FENCED_RO_DIRS[@]}") rw=("${FENCED_RW_DIRS[@]}")
+IFS=: read -ra _ro <<<"${FENCED_RO:-}"; ro+=("${_ro[@]}")
+IFS=: read -ra _rw <<<"${FENCED_RW:-}"; rw+=("${_rw[@]}")
+herdr=${FENCED_HERDR:-0} shell=0 dry=0 add_dirs=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --fence-ro) [[ $# -ge 2 ]] || die "$1 needs a dir"; ro+=("$2"); add_dirs+=("$2"); shift 2 ;;
+    --fence-ro=*) ro+=("${1#*=}"); add_dirs+=("${1#*=}"); shift ;;
+    --fence-rw) [[ $# -ge 2 ]] || die "$1 needs a dir"; rw+=("$2"); add_dirs+=("$2"); shift 2 ;;
+    --fence-rw=*) rw+=("${1#*=}"); add_dirs+=("${1#*=}"); shift ;;
+    --fence-herdr) herdr=1; shift ;;
+    --fence-shell) shell=1; shift ;;
+    --fence-dry-run) dry=1; shift ;;
+    --fence-help) usage; exit 0 ;;
+    --fence-*) die "unknown option $1 (see --fence-help)" ;;
+    *) break ;;
+  esac
+done
+tool_args=("$@")
+
+# Tool-level dir args also need filesystem access.
+for ((i = 0; i < ${#tool_args[@]}; i++)); do
+  a=${tool_args[i]}
+  case $a in
+    --add-dir|--include-directories|-C|--cd) [[ -n ${tool_args[i+1]:-} ]] && rw+=("${tool_args[i+1]}") ;;
+    --add-dir=*|--include-directories=*|--cd=*) rw+=("${a#*=}") ;;
+  esac
+done
+if [[ -n $add_dir_flag ]]; then
+  for d in "${add_dirs[@]}"; do tool_args=("$add_dir_flag" "$d" "${tool_args[@]}"); done
+fi
+
+# --- paths ---------------------------------------------------------------------
+abs() { realpath -m -- "${1/#\~/$H}"; }
+# Refuse dirs that would expose all of $HOME (or more).
+guard() {
+  local p=$1
+  [[ $p == / || $p == "$H" || $H == "$p"/* ]] && die "refusing to grant access to $p (would expose \$HOME)"
+  return 0
+}
+
+work=$(abs "$PWD"); guard "$work"
+allow_write=("$work")
+allow_read=()
+
+for d in "${rw[@]}"; do [[ -n $d ]] || continue; d=$(abs "$d"); guard "$d"; [[ -e $d ]] || die "no such dir: $d"; allow_write+=("$d"); done
+for d in "${ro[@]}"; do [[ -n $d ]] || continue; d=$(abs "$d"); guard "$d"; [[ -e $d ]] || die "no such dir: $d"; allow_read+=("$d"); done
+
+# Git worktree: the shared .git dir of the main repo must be writable to commit.
+if gd=$(git -C "$work" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  [[ $gd == "$work"/* ]] || { allow_write+=("$gd"); note "git: also granting $gd"; }
+fi
+
+# Tool state (read-write) and executable config (read-only again).
+allow_write+=("${state_rw[@]}")
+deny_write=()
+for p in "${protect[@]}"; do [[ -e $p ]] && deny_write+=("$p"); done
+
+# Claude: move ~/.claude.json into ~/.claude/ (see profile comment above).
+if [[ $tool == claude && ! -L $H/.claude.json && -f $H/.claude.json && $dry == 0 ]]; then
+  if [[ -e $H/.claude/.claude.json ]]; then
+    die "both ~/.claude.json and ~/.claude/.claude.json exist; resolve manually"
+  fi
+  cp -p "$H/.claude.json" "$H/.claude/.claude.json"
+  ln -s .claude/.claude.json "$H/.claude.json.fenced-tmp"
+  mv -T "$H/.claude.json.fenced-tmp" "$H/.claude.json"   # atomic swap
+  note "moved ~/.claude.json to ~/.claude/.claude.json (symlink left in place)"
+fi
+
+# Toolchains and caches. Read-only: mise installs/config, git config.
+# Read-write: package caches (data only — no dirs whose binaries run unfenced).
+[[ $tool == claude ]] && mkdir -p "$H/.cache/claude-cli-nodejs"
+for p in "$H/.local/share/mise" "${XDG_CONFIG_HOME:-$H/.config}/mise" "$H/.gitconfig" "$H/.config/git" "$SELF_DIR" "$H/.orca"; do
+  [[ -e $p ]] && allow_read+=("$p")
+done
+for p in "$H/.cache/claude-cli-nodejs" "$H/.npm" "$H/.m2/repository" "$H/.gradle/caches" "$H/.gradle/wrapper" \
+         "$H/.cargo/registry" "$H/.cargo/git" "$H/.cache/pip" "$H/.cache/uv" "$H/.cache/go-build" \
+         "$H/go/pkg/mod" "$H/.cache/ms-playwright" "$H/.cache/node-gyp" "$H/.local/share/pnpm"; do
+  [[ -e $p ]] && allow_write+=("$p")
+done
+
+# herdr (terminal agent manager): its hook reports status over a unix socket.
+# That socket API can also create panes / send keys = run commands unfenced,
+# so it's opt-in.
+if [[ $herdr == 1 ]]; then
+  if [[ -n ${HERDR_SOCKET_PATH:-} && -S $HERDR_SOCKET_PATH ]]; then
+    allow_write+=("$HERDR_SOCKET_PATH")
+  else
+    note "--fence-herdr: no HERDR_SOCKET_PATH socket in env, ignoring"
+  fi
+fi
+
+# /run/user/$UID holds the D-Bus session bus (systemd-run --user = escape,
+# keyring), hyprland, pipewire, gnupg... Fence mounts /run read-only but
+# sockets stay connectable, so hide it.
+deny_read=("/run/user/$(id -u)")
+
+# --- fence config ------------------------------------------------------------------
+json_array() { if [[ $# -eq 0 ]]; then echo '[]'; else printf '%s\n' "$@" | jq -R . | jq -s 'unique'; fi; }
+# allowedDomains "*": no network namespace, so outbound is direct and ports
+# bind on the host (reachable over tailscale). allowPty: TUI resize handling,
+# and keeps the tool in a foreground process group so Orca recognizes it.
+settings=$(jq -n \
+  --argjson allowRead "$(json_array "${allow_read[@]}")" \
+  --argjson allowWrite "$(json_array "${allow_write[@]}")" \
+  --argjson denyWrite "$(json_array "${deny_write[@]}")" \
+  --argjson denyRead "$(json_array "${deny_read[@]}")" \
+  '{network: {allowedDomains: ["*"], allowLocalBinding: true, allowLocalOutbound: true},
+    filesystem: {defaultDenyRead: true, allowRead: $allowRead, allowWrite: $allowWrite,
+                 denyWrite: $denyWrite, denyRead: $denyRead},
+    allowPty: true}')
+
+if [[ $shell == 1 ]]; then
+  # Interactive: ~/.bashrc is unreadable in the fence; use our own rc file
+  # (fence strips PS1 from the environment, so it can't be passed in).
+  if [[ ${#tool_args[@]} -eq 0 ]]; then
+    export FENCED_TOOL=$tool
+    cmd=(bash --rcfile "$SELF_DIR/fence-shell.rc")
+  else
+    cmd=(bash "${tool_args[@]}")
+  fi
+else
+  cmd=("$real" "${yolo[@]}" "${tool_args[@]}")
+fi
+# Environment for inside the sandbox: strip handles to host services.
+unset DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK GPG_AGENT_INFO
+[[ $herdr == 1 ]] || unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID
+for e in "${extra_env[@]}"; do export "$e"; done
+
+fence_flags=()
+[[ ${FENCED_DEBUG:-0} == 1 ]] && fence_flags+=(--debug)
+
+if [[ $dry == 1 ]]; then
+  printf '%s\n' "$settings"
+  printf 'command:'; printf ' %q' "${extra_env[@]}" fence "${fence_flags[@]}" --settings '<above>' -- "${cmd[@]}"; echo
+  exit 0
+fi
+
+note "$tool fenced to $work"
+for d in "${rw[@]}"; do [[ -n $d ]] && note "  rw: $(abs "$d")"; done
+for d in "${ro[@]}"; do [[ -n $d ]] && note "  ro: $(abs "$d")"; done
+
+# Settings go in via an fd, so no temp file is left behind and no repo-local
+# fence.json can be picked up. argv[0] "$tool" helps Orca's fast-path detection.
+exec 3<<<"$settings"
+exec -a "$tool" fence "${fence_flags[@]}" --settings /dev/fd/3 -- "${cmd[@]}"

@@ -1,0 +1,2 @@
+# rc file for `--fence-shell` (the user's ~/.bashrc is not readable in the fence)
+PS1="[fenced:${FENCED_TOOL:-?}] \w \$ "
