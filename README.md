@@ -39,7 +39,7 @@ To bypass the fence for one run: `FENCED_OFF=1 claude`.
 
 | Access | Paths |
 |---|---|
-| read-write | current directory; the main repo's `.git` when in a git worktree; `--fence-rw` / `--add-dir` dirs; tool state (`~/.claude`, `~/.codex`, `~/.gemini`); package caches (`~/.npm`, `~/.m2/repository`, `~/.gradle/caches`, `~/.cargo/registry`, ...) |
+| read-write | current directory; the main repo's `.git` when in a git worktree; `--fence-rw` / `--add-dir` dirs; tool state (`~/.claude`, `~/.codex`, `~/.gemini`); package caches (`~/.npm`, `~/.m2/repository`, `~/.gradle/caches`, `~/.cargo/registry`, `~/.vaadin`, ...) |
 | read-only | `--fence-ro` dirs; mise tool installs and config; git config; system dirs (`/usr`, `/etc`, ...) |
 | read-only inside writable state | tool config that would run code in *later* sessions: `~/.claude/{settings.json,hooks,plugins,skills,statusline*,...}`, `~/.codex/{config.toml,skills,...}` |
 | invisible | everything else in `$HOME` (`~/.ssh`, `~/.config/gh`, `~/.aws`, other projects, ...), `/run/user/$UID` (D-Bus, keyring, Hyprland, gnupg sockets) |
