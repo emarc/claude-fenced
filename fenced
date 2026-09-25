@@ -384,11 +384,16 @@ fi
 
 # Toolchains and caches. Read-only: mise installs/config, git config.
 # Read-write: package caches (data only — no dirs whose binaries run unfenced).
+# fence can only grant paths that exist, and tools create their cache lazily
+# (mvnw's first step is mkdir ~/.m2/wrapper), so pre-create the common ones.
+# Not ~/go or ~/.cargo: their toolchains are installed unfenced and create them.
 [[ $tool == claude ]] && mkdir -p "$H/.cache/claude-cli-nodejs"
+mkdir -p "$H/.m2/repository" "$H/.m2/wrapper" "$H/.gradle/caches" "$H/.gradle/wrapper" "$H/.npm" \
+         "$H/.cache/pip" "$H/.cache/uv" "$H/.cache/ms-playwright" "$H/.cache/node-gyp" 2>/dev/null || true
 for p in "$H/.local/share/mise" "${XDG_CONFIG_HOME:-$H/.config}/mise" "$H/.gitconfig" "$H/.config/git" "$SELF_DIR" "$H/.orca"; do
   [[ -e $p ]] && allow_read+=("$p")
 done
-for p in "$H/.cache/claude-cli-nodejs" "$H/.npm" "$H/.m2/repository" "$H/.gradle/caches" "$H/.gradle/wrapper" \
+for p in "$H/.cache/claude-cli-nodejs" "$H/.npm" "$H/.m2/repository" "$H/.m2/wrapper" "$H/.gradle/caches" "$H/.gradle/wrapper" \
          "$H/.cargo/registry" "$H/.cargo/git" "$H/.cache/pip" "$H/.cache/uv" "$H/.cache/go-build" \
          "$H/go/pkg/mod" "$H/.cache/ms-playwright" "$H/.cache/node-gyp" "$H/.local/share/pnpm"; do
   [[ -e $p ]] && allow_write+=("$p")
