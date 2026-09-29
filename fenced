@@ -478,6 +478,12 @@ PATH=$(fence_path)
 
 # Environment for inside the sandbox: strip handles to host services.
 unset DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK GPG_AGENT_INFO
+# Chromium, Chrome and Playwright's builds keep crash reports under
+# ~/.config/<browser>/Crash Reports even when headless or given --user-data-dir.
+# ~/.config is read-only here, so crashpad starts with no database and the
+# browser aborts (SIGTRAP). CHROME_CONFIG_HOME moves only that default dir (it
+# must be absolute; empty means the cwd). /tmp is private to the session.
+export CHROME_CONFIG_HOME=/tmp/chrome-config
 [[ $herdr == 1 ]] || unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID
 for e in "${extra_env[@]}"; do export "$e"; done
 

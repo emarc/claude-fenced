@@ -156,6 +156,9 @@ How it works:
 - `/tmp` is private per session, so you can't hand files over through `/tmp`.
 - Fence always write-protects `.git/hooks`, shell rc files and `.vscode`/`.idea`
   dirs, so e.g. `husky install` fails.
+- Chromium, Chrome and Playwright browsers run, but only with `--no-sandbox`
+  (Playwright's default): their own sandbox needs user namespaces, which the
+  fence denies. Their crash reports go to a private `/tmp/chrome-config`.
 - Shell rc files are empty inside the fence, so the environment comes from
   the shell that launched the wrapper.
 - Claude's cross-session messaging (`/run/user/$UID/cc-socks`) is unavailable,

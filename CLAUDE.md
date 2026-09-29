@@ -104,6 +104,16 @@ Re-verify these if fence is upgraded.
   loses the foreground `+` in `ps`, so Orca ignores it.
 - Git worktrees: committing from inside works once the main repo's
   `--git-common-dir` is granted rw.
+- **Chromium-based browsers** (system chromium 152, google-chrome 154,
+  Playwright's bundled chromium and headless shell) abort at launch with
+  `chrome_crashpad_handler: --database is required` and SIGTRAP: the crash
+  database is always under `$CHROME_CONFIG_HOME` (default
+  `~/.config/<browser>`), even with `--headless` and `--user-data-dir`, and
+  `~/.config` is read-only. The wrapper sets `CHROME_CONFIG_HOME=/tmp/chrome-config`.
+  An *empty* value means the cwd (a stray `chromium/Crash Reports` in the project).
+  Their own sandbox cannot start: new user namespaces are denied (`unshare -U`)
+  and the SUID helper fails under NoNewPrivs. So `--no-sandbox` is required;
+  Playwright passes it by default (`chromiumSandbox: false`).
 - Claude's `uds-messaging` falls back to a private `/tmp/cc-socks-0`
   (cross-session messaging is isolated; intentional).
 
