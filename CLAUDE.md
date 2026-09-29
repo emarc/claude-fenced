@@ -114,6 +114,11 @@ Re-verify these if fence is upgraded.
   Their own sandbox cannot start: new user namespaces are denied (`unshare -U`)
   and the SUID helper fails under NoNewPrivs. So `--no-sandbox` is required;
   Playwright passes it by default (`chromiumSandbox: false`).
+- fence doesn't expose `/var/cache`, so fontconfig had no cache and rescanned
+  all ~800 fonts on each launch ("No writable cache directories"). The wrapper
+  grants `/var/cache/fontconfig` and `~/.cache/fontconfig` read-only. Prebuilt
+  caches are enough, and rw would let a fenced agent poison files that
+  unfenced apps parse.
 - Claude's `uds-messaging` falls back to a private `/tmp/cc-socks-0`
   (cross-session messaging is isolated; intentional).
 
