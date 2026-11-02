@@ -402,6 +402,19 @@ for p in "$H/.cache/claude-cli-nodejs" "$H/.npm" "$H/.m2/repository" "$H/.m2/wra
          "$H/go/pkg/mod" "$H/.cache/ms-playwright" "$H/.cache/node-gyp" "$H/.local/share/pnpm" "$H/.vaadin"; do
   [[ -e $p ]] && allow_write+=("$p")
 done
+# Everything else that caches in ~/.cache gets XDG_CACHE_HOME=~/.cache/fenced:
+# writable, shared by fenced sessions only. The real ~/.cache stays hidden: it
+# holds things run or sourced unfenced (AUR builds, nvim luac, pre-commit envs,
+# shell completions, mise downloads) and secrets (browser caches, HF token).
+# The shared caches above are symlinked in, so tools still find them; the
+# targets are mounted at their real paths. Refreshed each run in case a fenced
+# agent repointed one.
+fcache=$H/.cache/fenced
+mkdir -p "$fcache" 2>/dev/null || true
+for p in claude-cli-nodejs pip uv go-build ms-playwright node-gyp fontconfig; do
+  [[ -e $H/.cache/$p ]] && { ln -sfnT "../$p" "$fcache/$p" 2>/dev/null || true; }
+done
+[[ -d $fcache ]] && allow_write+=("$fcache")
 
 # herdr (terminal agent manager): its hook reports status over a unix socket.
 # That socket API can also create panes / send keys = run commands unfenced,
@@ -487,6 +500,7 @@ unset DBUS_SESSION_BUS_ADDRESS SSH_AUTH_SOCK GPG_AGENT_INFO
 # browser aborts (SIGTRAP). CHROME_CONFIG_HOME moves only that default dir (it
 # must be absolute; empty means the cwd). /tmp is private to the session.
 export CHROME_CONFIG_HOME=/tmp/chrome-config
+[[ -d $fcache ]] && export XDG_CACHE_HOME=$fcache
 [[ $herdr == 1 ]] || unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID
 for e in "${extra_env[@]}"; do export "$e"; done
 

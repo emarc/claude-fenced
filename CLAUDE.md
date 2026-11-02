@@ -127,6 +127,10 @@ Re-verify these if fence is upgraded.
 - Package caches are rw, a cross-project poisoning risk accepted for
   usability. Dirs whose binaries run unfenced (`~/.cargo/bin`, mise installs,
   `~/.cache/mise` downloads) stay ro or hidden.
+- `XDG_CACHE_HOME=~/.cache/fenced` (rw, fenced-only), with symlinks to the
+  shared `~/.cache/{pip,uv,...}` dirs, refreshed each run. The real `~/.cache`
+  stays hidden: AUR build dirs, nvim luac, pre-commit envs and shell completions
+  there run unfenced, and browser caches/HF tokens are secrets.
 - herdr's socket is opt-in (`--fence-herdr`), because its API can spawn panes.
   Exposing the socket via `allowWrite` is untested.
 - `~/.claude.json` stays writable and can hold MCP server commands, so
