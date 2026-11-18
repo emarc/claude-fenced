@@ -262,6 +262,16 @@ esac
 # Already inside a fence (e.g. the agent runs `claude -p` itself): run directly.
 if [[ -n ${FENCE_SANDBOX:-} || ${FENCED_OFF:-0} == 1 ]]; then
   [[ ${FENCED_OFF:-0} == 1 ]] && note "FENCED_OFF=1: running $tool UNFENCED"
+  # Don't hand --fence-* to the tool ("unknown option"); nested fences can't
+  # grant more access, and unfenced they're moot.
+  if [[ ${1:-} == --fence-* ]]; then
+    [[ -n ${FENCE_SANDBOX:-} ]] && die "already inside a fence; $1 can't grant access from here (exit the fenced shell/agent first)"
+    while [[ ${1:-} == --fence-* ]]; do
+      note "FENCED_OFF=1: ignoring $1"
+      case $1 in --fence-ro|--fence-rw) shift ;; esac
+      shift
+    done
+  fi
   for e in "${extra_env[@]}"; do [[ -n ${FENCE_SANDBOX:-} ]] && export "$e"; done
   exec -a "$tool" "$real" "${yolo[@]}" "$@"
 fi
