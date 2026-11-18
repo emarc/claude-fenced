@@ -2,7 +2,7 @@
 
 ## What this is
 
-`fenced` is a bash wrapper that runs coding agents (claude, codex, gemini, ...)
+`fenced` is a bash wrapper that runs coding agents (claude, codex, agy, ...)
 in yolo mode inside a [fence](https://github.com/fencesandbox/fence) sandbox
 (bubblewrap + Landlock + seccomp on Linux). The goal: never block on permission
 prompts, because the agent can only reach the project it was started in.
@@ -20,7 +20,7 @@ that doesn't apply here. Don't port it over.
 - `fenced`: the whole implementation
 - `fence-shell.rc`: rc file for the interactive `--fence-shell`. `~/.bashrc`
   is unreadable in the fence, and fence strips `PS1` from the environment.
-- `bin/{claude,codex,gemini}`: symlinks to `../fenced`; tool = `basename $0`.
+- `bin/{claude,codex,agy}`: symlinks to `../fenced`; tool = `basename $0`.
   Installed by putting `bin/` first on PATH (ahead of `~/.local/bin`).
 
 ## Requirements (from the user)

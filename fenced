@@ -247,10 +247,12 @@ case $tool in
     state_rw=("${CODEX_HOME:-$H/.codex}")
     protect=("${CODEX_HOME:-$H/.codex}/"{config.toml,AGENTS.md,skills,prompts,rules})
     ;;
-  gemini)
-    yolo=(--yolo); add_dir_flag=--include-directories
+  agy)
+    # Google Antigravity CLI (replaces gemini-cli); still keeps state in ~/.gemini.
+    # config/ holds hooks, MCP servers, plugins, skills and workflows: all ro.
+    yolo=(--dangerously-skip-permissions); add_dir_flag=--add-dir
     state_rw=("$H/.gemini")
-    protect=("$H/.gemini/settings.json")
+    protect=("$H/.gemini/"{config,antigravity-cli/settings.json,antigravity-cli/hooks.json,settings.json,GEMINI.md})
     ;;
   *)
     [[ -d $H/.$tool ]] && state_rw=("$H/.$tool")
@@ -262,6 +264,12 @@ if [[ -n ${FENCE_SANDBOX:-} || ${FENCED_OFF:-0} == 1 ]]; then
   [[ ${FENCED_OFF:-0} == 1 ]] && note "FENCED_OFF=1: running $tool UNFENCED"
   for e in "${extra_env[@]}"; do [[ -n ${FENCE_SANDBOX:-} ]] && export "$e"; done
   exec -a "$tool" "$real" "${yolo[@]}" "$@"
+fi
+
+# agy updates itself in place, which fails in the fence (~/.local/bin is ro),
+# and has no check-only mode. Nag when the binary hasn't changed in a week.
+if [[ $tool == agy ]] && [[ -n $(find "$real" -maxdepth 0 -mtime +7 2>/dev/null) ]]; then
+  note "agy not updated in over a week; run: FENCED_OFF=1 agy update"
 fi
 
 command -v fence >/dev/null || die "fence not found (see README.md)"
@@ -367,6 +375,13 @@ if [[ -n ${GH_TOKEN:-${GITHUB_TOKEN:-}} ]]; then
 fi
 
 # Tool state (read-write) and executable config (read-only again).
+# deny_write only covers paths that exist; an absent hooks.json could be created inside.
+if [[ $tool == agy ]]; then
+  mkdir -p "$H/.gemini/config" "$H/.gemini/antigravity-cli"
+  for f in settings.json hooks.json; do
+    [[ -e $H/.gemini/antigravity-cli/$f ]] || echo '{}' >"$H/.gemini/antigravity-cli/$f"
+  done
+fi
 allow_write+=("${state_rw[@]}")
 deny_write=()
 for p in "${protect[@]}"; do [[ -e $p ]] && deny_write+=("$p"); done

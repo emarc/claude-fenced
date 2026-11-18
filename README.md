@@ -1,6 +1,6 @@
 # claude-fenced
 
-Run `claude`, `codex` (or `gemini`, ...) in yolo mode, sandboxed with
+Run `claude`, `codex` (or `agy`, ...) in yolo mode, sandboxed with
 [fence](https://github.com/fencesandbox/fence) so the agent can only touch the
 project you started it in. No container: the agent uses the real host
 filesystem, toolchains and network, so there are no image builds, no file-lock
@@ -29,7 +29,7 @@ sudo pacman -S --needed bubblewrap socat jq
 echo 'export PATH="$HOME/Projects/claude-fenced/bin:$PATH"' >> ~/.bashrc
 ```
 
-`bin/claude`, `bin/codex`, `bin/gemini` are symlinks to `fenced`; the tool is
+`bin/claude`, `bin/codex`, `bin/agy` are symlinks to `fenced`; the tool is
 picked from the name it was called as. For another tool, add a symlink (it gets
 the generic profile: no yolo flag, `~/.<tool>` read-write) or a profile in `fenced`.
 
@@ -39,9 +39,9 @@ To bypass the fence for one run: `FENCED_OFF=1 claude`.
 
 | Access | Paths |
 |---|---|
-| read-write | current directory; the main repo's `.git` when in a git worktree; `--fence-rw` / `--add-dir` dirs; tool state (`~/.claude`, `~/.codex`, `~/.gemini`); package caches (`~/.npm`, `~/.m2/repository`, `~/.gradle/caches`, `~/.cargo/registry`, `~/.vaadin`, ...); `~/.cache/fenced` as `XDG_CACHE_HOME`, shared by fenced sessions only |
+| read-write | current directory; the main repo's `.git` when in a git worktree; `--fence-rw` / `--add-dir` dirs; tool state (`~/.claude`, `~/.codex`, `~/.gemini` for agy); package caches (`~/.npm`, `~/.m2/repository`, `~/.gradle/caches`, `~/.cargo/registry`, `~/.vaadin`, ...); `~/.cache/fenced` as `XDG_CACHE_HOME`, shared by fenced sessions only |
 | read-only | `--fence-ro` dirs; mise tool installs and config; git config; system dirs (`/usr`, `/etc`, ...) |
-| read-only inside writable state | tool config that would run code in *later* sessions: `~/.claude/{settings.json,hooks,plugins,skills,statusline*,...}`, `~/.codex/{config.toml,skills,...}` |
+| read-only inside writable state | tool config that would run code in *later* sessions: `~/.claude/{settings.json,hooks,plugins,skills,statusline*,...}`, `~/.codex/{config.toml,skills,...}`, `~/.gemini/{config,antigravity-cli/{settings,hooks}.json,...}` |
 | invisible | everything else in `$HOME` (`~/.ssh`, `~/.config/gh`, `~/.aws`, other projects, ...), `/run/user/$UID` (D-Bus, keyring, Hyprland, gnupg sockets) |
 | network | unrestricted in and out; servers bind on the host, so a dev server on `0.0.0.0:PORT` is reachable over Tailscale |
 
